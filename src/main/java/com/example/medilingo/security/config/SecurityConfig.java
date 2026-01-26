@@ -47,6 +47,15 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers("/api/auth/signup", "/api/auth/login").permitAll()
                         //.requestMatchers(HttpMethod.POST, "/api/papers/**").authenticated()
+                        // Swagger 허용
+                        .requestMatchers(
+                                "/swagger-ui/**",
+                                "/swagger-ui.html",
+                                "/v3/api-docs/**"
+                        ).permitAll()
+                        // allow this API without login (MVP단계에서만 계정 없이 사용 가능하게끔 하기)
+                        .requestMatchers(HttpMethod.POST, "/api/drug/symptom-drug-mapping").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/drug/translate").permitAll()
                         .anyRequest().authenticated()
                 )
                 // ✅ JWT 인가 필터 추가
