@@ -46,7 +46,7 @@ public class SecurityConfig {
 
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers("/api/auth/signup", "/api/auth/login").permitAll()
-                        //.requestMatchers(HttpMethod.POST, "/api/papers/**").authenticated()
+                        .requestMatchers("/api/drugs/**").permitAll()
                         .anyRequest().authenticated()
                 )
                 // ✅ JWT 인가 필터 추가
