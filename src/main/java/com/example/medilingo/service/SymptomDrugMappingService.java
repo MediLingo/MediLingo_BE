@@ -12,31 +12,39 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 public class SymptomDrugMappingService {
-    private final DrugTranslateService drugTranslateService;
     private final SymptomDrugGeminiService geminiService;
+    private final UsOpenFdaNdcService usOpenFdaNdcService;
+    private final BingImageSearchService bingImageSearchService;
 
     public DrugTranslateResponse symptomDrugMapping(SymptomDrugMappingRequest req){
 
+        //1st gemini call
         NormalizedDrug normalized = geminiService.recommendFromSymptoms(req);
 
         if (normalized.activeIngredient() == null){
             return new DrugTranslateResponse(
                     normalized,
-                    List.of(), // MVP: no local products yet
+                    List.of(),
                     disclaimer()
             );
         }
-        List<LocalProductDto> products =
-                geminiService.recommendLocalProducts(
-                        req.countryCode(),
-                        normalized
-                );
+        // 2) DB/API lookup: ingredient -> products (no LLM)
+        List<LocalProductDto> products = switch (req.countryCode().toUpperCase()) {
+            case "US" -> usOpenFdaNdcService.findTopProductsByIngredient(normalized.activeIngredient(), 20);
+            default -> List.of(); // JP/KR: later (seed table or other API)
+        };
 
-        return new DrugTranslateResponse(
-                normalized,
-                products, // MVP: no local products yet
-                disclaimer()
-        );
+//        List<LocalProductDto> withImages = products.stream()
+//                .limit(3)
+//                .map(p -> new LocalProductDto(
+//                        p.name(),
+//                        bingImageSearchService.findImageUrl(p.name() + " product"),
+//                        "bing"
+//                ))
+//                .toList();
+
+
+        return new DrugTranslateResponse(normalized, products, disclaimer());
     }
 
     private String disclaimer() {

@@ -29,7 +29,7 @@ public class DrugTranslateController {
     public ResponseEntity<ApiResult<DrugTranslateResponse>> translate(
             @AuthenticationPrincipal UserDetailsImpl userDetails,
             @RequestBody DrugTranslateRequest reqDto){
-        Member member = userDetails.getUser();
+        //Member member = userDetails.getUser();
         DrugTranslateResponse result = drugTranslateService.translate(reqDto);
         return ResponseEntity.ok(ApiResult.success(result));
     }

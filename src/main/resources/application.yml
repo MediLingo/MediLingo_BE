@@ -24,3 +24,9 @@ logging:
   level:
     org.springframework.security: DEBUG
 
+openfda:
+  api-key: ${OPENFDA_API_KEY}
+
+bing:
+  endpoint: https://api.bing.microsoft.com
+  key: ${BING_SEARCH_KEY}
