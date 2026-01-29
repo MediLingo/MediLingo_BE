@@ -56,6 +56,8 @@ public class SecurityConfig {
                         // allow this API without login (MVP단계에서만 계정 없이 사용 가능하게끔 하기)
                         .requestMatchers(HttpMethod.POST, "/api/drug/symptom-drug-mapping").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/drug/translate").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/drugs/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/drugs/**").permitAll()
                         .anyRequest().authenticated()
                 )
                 // ✅ JWT 인가 필터 추가
