@@ -18,8 +18,12 @@ public class DrugTranslateService {
     private final DrugFallbackMappingService fallbackMappingService;
 
     public DrugTranslateResponse translate(DrugTranslateRequest req) {
-        final String country = normalizeCountry(req.countryCode());
-        final String input = safe(req.koreanDrugText());
+        return lookup(req.countryCode(), req.koreanDrugText());
+    }
+
+    public DrugTranslateResponse lookup(String countryCode, String koreanDrugText) {
+            final String country = normalizeCountry(countryCode);
+            final String input = safe(koreanDrugText);
 
         // 1) LLM normalize
         NormalizedDrug normalized = drugNormalizeService.normalize(input);
