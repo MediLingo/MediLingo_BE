@@ -39,7 +39,7 @@ public class SymptomDrugMappingService {
                         normalized.activeIngredient().toLowerCase()
                 )
                 .stream()
-                .map(p -> new LocalProductDto(p.getLocalName(), p.getImageUrl(), p.getSource()))
+                .map(p -> new LocalProductDto(p.getId(), p.getLocalName(), p.getImageUrl(), p.getSource()))
                 .toList();
 
         if (products.isEmpty()) {

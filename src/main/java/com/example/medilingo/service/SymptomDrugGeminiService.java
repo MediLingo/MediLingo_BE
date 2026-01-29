@@ -104,42 +104,42 @@ public class SymptomDrugGeminiService {
                 );
     }
 
-    public List<LocalProductDto> recommendLocalProducts(String countryCode, NormalizedDrug normalized) {
-        if (normalized == null || isBlank(normalized.activeIngredient())) {
-            return List.of();
-        }
-
-        String prompt = buildLocalProductsPrompt(countryCode, normalized);
-
-        Map<String, Object> body = Map.of(
-                "contents", List.of(
-                        Map.of("parts", List.of(Map.of("text", prompt)))
-                ),
-                "generationConfig", Map.of(
-                        "responseMimeType", "application/json",
-                        "temperature", 0.2
-                )
-        );
-
-        try {
-            String raw = geminiWebClient.post()
-                    .uri("/models/{model}:generateContent?key={key}", model, geminiApiKey)
-                    .bodyValue(body)
-                    .retrieve()
-                    .bodyToMono(String.class)
-                    .block();
-
-            if (raw == null || raw.isBlank()) return List.of();
-
-            String text = extractTextFromGemini(raw);
-            if (text == null || text.isBlank()) return List.of();
-
-            return parseLocalProducts(text);
-
-        } catch (Exception e) {
-            return List.of();
-        }
-    }
+//    public List<LocalProductDto> recommendLocalProducts(String countryCode, NormalizedDrug normalized) {
+//        if (normalized == null || isBlank(normalized.activeIngredient())) {
+//            return List.of();
+//        }
+//
+//        String prompt = buildLocalProductsPrompt(countryCode, normalized);
+//
+//        Map<String, Object> body = Map.of(
+//                "contents", List.of(
+//                        Map.of("parts", List.of(Map.of("text", prompt)))
+//                ),
+//                "generationConfig", Map.of(
+//                        "responseMimeType", "application/json",
+//                        "temperature", 0.2
+//                )
+//        );
+//
+//        try {
+//            String raw = geminiWebClient.post()
+//                    .uri("/models/{model}:generateContent?key={key}", model, geminiApiKey)
+//                    .bodyValue(body)
+//                    .retrieve()
+//                    .bodyToMono(String.class)
+//                    .block();
+//
+//            if (raw == null || raw.isBlank()) return List.of();
+//
+//            String text = extractTextFromGemini(raw);
+//            if (text == null || text.isBlank()) return List.of();
+//
+//            return parseLocalProducts(text);
+//
+//        } catch (Exception e) {
+//            return List.of();
+//        }
+//    }
 
     private String buildLocalProductsPrompt(String countryCode, NormalizedDrug normalized) {
         return """
@@ -188,23 +188,23 @@ public class SymptomDrugGeminiService {
                 );
     }
 
-    private List<LocalProductDto> parseLocalProducts(String jsonArray) throws Exception {
-        JsonNode arr = objectMapper.readTree(jsonArray);
-        if (!arr.isArray()) return List.of();
-
-        List<LocalProductDto> out = new java.util.ArrayList<>();
-        for (JsonNode p : arr) {
-            String name = asNullable(p.get("name"));
-            if (isBlank(name)) continue;
-
-            // Enforce MVP rules even if Gemini deviates
-            out.add(new LocalProductDto(
-                    name,
-                    sanitizeImageUrl(asNullable(p.get("imageUrl"))),
-                    "gemini"));
-        }
-        return out;
-    }
+//    private List<LocalProductDto> parseLocalProducts(String jsonArray) throws Exception {
+//        JsonNode arr = objectMapper.readTree(jsonArray);
+//        if (!arr.isArray()) return List.of();
+//
+//        List<LocalProductDto> out = new java.util.ArrayList<>();
+//        for (JsonNode p : arr) {
+//            String name = asNullable(p.get("name"));
+//            if (isBlank(name)) continue;
+//
+//            // Enforce MVP rules even if Gemini deviates
+//            out.add(new LocalProductDto(
+//                    name,
+//                    sanitizeImageUrl(asNullable(p.get("imageUrl"))),
+//                    "gemini"));
+//        }
+//        return out;
+//    }
 
     private String sanitizeImageUrl(String url) {
         if (url == null) return null;
