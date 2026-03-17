@@ -6,44 +6,51 @@ import com.example.medilingo.controller.drug.response.LocalProductDto;
 import com.example.medilingo.controller.drug.response.NormalizedDrug;
 import com.example.medilingo.domain.drug.repository.LocalDrugProductRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class SymptomDrugMappingService {
     private final SymptomDrugGeminiService geminiService;
     private final LocalDrugProductRepository localRepo;
+    private final OpenFdaService openFdaService;
+    private final RxImageService rxImageService;
 
     public DrugTranslateResponse symptomDrugMapping(SymptomDrugMappingRequest req){
 
         NormalizedDrug normalized = geminiService.recommendFromSymptoms(req);
+        String country = normalizeCountry(req.countryCode());
 
         if (normalized.activeIngredient() == null){
             return new DrugTranslateResponse(
                     normalized,
-                    List.of(), // MVP: no local products yet
+                    List.of(),
                     disclaimer()
             );
         }
-//        List<LocalProductDto> products =
-//                geminiService.recommendLocalProducts(
-//                        req.countryCode(),
-//                        normalized
-//                );
 
-        List<LocalProductDto> products = localRepo
-                .findTop10ByCountryCodeAndActiveIngredientOrderByIdDesc(
-                        req.countryCode(),
-                        normalized.activeIngredient().toLowerCase()
-                )
-                .stream()
-                .map(p -> new LocalProductDto(p.getId(), p.getLocalName(), p.getImageUrl(), p.getSource()))
-                .toList();
+        // Look up products — OpenFDA for US, local DB for others
+        List<LocalProductDto> products;
+
+        if ("US".equals(country)) {
+            products = lookupViaOpenFda(normalized.activeIngredient());
+        } else {
+            products = localRepo
+                    .findTop10ByCountryCodeAndActiveIngredientOrderByIdDesc(
+                            country,
+                            normalized.activeIngredient().toLowerCase()
+                    )
+                    .stream()
+                    .map(p -> new LocalProductDto(p.getId(), p.getLocalName(), p.getImageUrl(), p.getSource()))
+                    .toList();
+        }
 
         if (products.isEmpty()) {
-            NormalizedDrug finalNormalized = new NormalizedDrug(
+            NormalizedDrug finalNormalized = NormalizedDrug.ofSingle(
                     normalized.activeIngredient(),
                     normalized.dose(),
                     normalized.form(),
@@ -59,7 +66,7 @@ public class SymptomDrugMappingService {
 
         return new DrugTranslateResponse(
                 normalized,
-                products, // MVP: no local products yet
+                products,
                 disclaimer()
         );
     }
@@ -67,6 +74,25 @@ public class SymptomDrugMappingService {
     private String disclaimer() {
         return "의학적 진단이 아니며, 일반적인 정보 제공 목적입니다. 복용 전 약사/의사 상담을 권장합니다.";
     }
+
+    /**
+     * Look up US drug products via OpenFDA, then enrich with RxImage pill images.
+     */
+    private List<LocalProductDto> lookupViaOpenFda(String ingredient) {
+        List<OpenFdaService.DrugEntry> entries = openFdaService.searchByIngredientRich(ingredient, 10);
+        return entries.stream()
+                .map(e -> {
+                    String imageUrl = rxImageService.fetchImageUrl(e.brandName());
+                    return new LocalProductDto(null, e.displayName(), imageUrl, "OpenFDA");
+                })
+                .toList();
+    }
+
+    private String normalizeCountry(String cc) {
+        if (cc == null || cc.isBlank()) return "US";
+        return cc.trim().toUpperCase();
+    }
+
 
     private boolean isBlank(String s) {
         return s == null || s.trim().isBlank();

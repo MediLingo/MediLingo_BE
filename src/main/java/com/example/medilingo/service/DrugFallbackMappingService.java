@@ -4,6 +4,7 @@ import com.example.medilingo.controller.drug.response.NormalizedDrug;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
@@ -100,7 +101,7 @@ public class DrugFallbackMappingService {
                 }
 
                 return new NormalizedDrug(
-                        ingredient,
+                        List.of(ingredient),
                         base.dose(),
                         base.form(),
                         note

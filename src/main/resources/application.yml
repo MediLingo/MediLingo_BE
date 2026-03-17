@@ -31,6 +31,13 @@ gemini:
   api-key: ${GEMINI_API_KEY}
   model: gemini-2.5-flash
 
+openfda:
+  api-key: ${OPENFDA_API_KEY:}
+  base-url: https://api.fda.gov
+
+rximage:
+  base-url: https://rximage.nlm.nih.gov
+
 logging:
   level:
     org.springframework.security: DEBUG

@@ -8,6 +8,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -51,57 +53,54 @@ public class DrugNormalizeGeminiService {
                     .block();
 
             if (raw == null || raw.isBlank()) {
-                return new NormalizedDrug(null, null, null, "LLM call failed or returned empty output");
+                return new NormalizedDrug(Collections.emptyList(), null, null, "LLM call failed or returned empty output");
             }
 
             String text = extractTextFromGemini(raw);
             if (text == null || text.isBlank()) {
-                return new NormalizedDrug(null, null, null, "LLM call failed or returned empty output");
+                return new NormalizedDrug(Collections.emptyList(), null, null, "LLM call failed or returned empty output");
             }
 
             return parseNormalizedDrug(text);
 
         } catch (Exception e) {
-            return new NormalizedDrug(null, null, null, "LLM normalize failed: " + e.getMessage());
+            return new NormalizedDrug(Collections.emptyList(), null, null, "LLM normalize failed: " + e.getMessage());
         }
     }
 
     private String buildPrompt(String koreanDrugText) {
         return """
             You are a strict information extraction engine for OTC/prescription drug mentions in Korean text.
-            Your job is to normalize the drug into a generic ingredient name when (and only when) you are confident.
-
+            Your job is to normalize the drug into generic ingredient names when (and only when) you are confident.
+    
             Return ONLY a valid JSON object with exactly these keys:
-            - activeIngredient: string or null
-              * Use the INN / generic ingredient name in English (lowercase), e.g. "acetaminophen", "ibuprofen".
-              * If the ingredient cannot be identified with high confidence from the input, output null.
+            - activeIngredients: array of strings or empty array []
+              * List ALL active ingredients using INN / generic names in English (lowercase), e.g. ["acetaminophen", "pseudoephedrine"].
+              * Order them from PRIMARY (most therapeutically significant) to SECONDARY.
+              * If no ingredient can be identified with high confidence, return an empty array [].
             - dose: string or null
-              * Extract the strength/dose if explicitly present, e.g. "500mg", "10 mg/5 mL", "0.1%%".
-              * Preserve the original units and numeric formatting as much as possible.
+              * Extract the strength/dose if explicitly present, e.g. "500mg", "10 mg/5 mL".
+              * If multiple doses exist for multiple ingredients, list them comma-separated.
             - form: string or null
-              * Extract dosage form ONLY if explicitly indicated, e.g. "tablet", "capsule", "syrup", "ointment", "patch", "spray", "drops".
+              * Extract dosage form ONLY if explicitly indicated, e.g. "tablet", "capsule", "syrup".
               * If not explicitly stated, output null.
             - notes: string
-              * A short but informative explanation of what you did and any uncertainty.
-              * Mention whether:
-                - the ingredient was explicit vs inferred
-                - the input looks like a brand name
-                - the input could be a combination product (multiple active ingredients)
-                - the dose/form were missing or ambiguous
-
+              * Explain what you did and any uncertainty.
+              * Mention whether ingredients were explicit vs inferred, whether this looks like a combination product, and any ambiguity.
+    
             HARD RULES (must follow):
             1) Output JSON only (no markdown, no code fences, no extra text).
-            2) Do NOT guess activeIngredient from a brand name unless you are highly confident and it is widely and uniquely associated.
-               If not sure, set activeIngredient = null and explain in notes.
-            3) If the text suggests a combination product (e.g., cold/flu multi-symptom medicines),
-               do NOT guess the full composition. Set activeIngredient to null unless one single ingredient is explicitly stated.
-            4) If the input contains conflicting strengths/forms, mention it in notes and keep dose/form null unless one is clearly stated.
-            5) Use null (not empty string) when a value is missing.
-
+            2) Do NOT guess any ingredient from a brand name unless you are highly confident.
+               If not sure, omit that ingredient entirely.
+            3) For combination products (e.g. cold/flu multi-symptom), list ALL ingredients you can identify with confidence.
+               Only omit ingredients you are uncertain about.
+            4) If the input contains conflicting strengths/forms, mention it in notes and keep dose/form null.
+            5) Use null (not empty string) for missing scalar values. Use [] (not null) for missing ingredients.
+    
             Examples of Korean cues:
-            - Dose cues: "mg", "g", "mcg/μg", "mL", "%%", "정", "캡슐", "시럽", "연고", "패치", "스프레이", "점안액"
+            - Dose cues: "mg", "g", "mcg/μg", "mL", "%%", "정", "캡슐", "시럽", "연고", "패치"
             - Brand cues: product/brand names without an explicit ingredient
-
+    
             Input Korean text: "%s"
             """.formatted(koreanDrugText.replace("\"", "\\\""));
     }
@@ -125,18 +124,29 @@ public class DrugNormalizeGeminiService {
         try {
             JsonNode node = objectMapper.readTree(json);
 
-            String activeIngredient = asNullableText(node.get("activeIngredient"));
+            List<String> activeIngredients = new ArrayList<>();
+            JsonNode ingredientsNode = node.get("activeIngredients");
+            if (ingredientsNode != null && ingredientsNode.isArray()) {
+                for (JsonNode ingredient : ingredientsNode) {
+                    String val = ingredient.asText(null);
+                    if (val != null && !val.isBlank()) {
+                        activeIngredients.add(val.trim().toLowerCase());
+                    }
+                }
+            }
+
             String dose = asNullableText(node.get("dose"));
             String form = asNullableText(node.get("form"));
             String notes = node.path("notes").asText("");
 
-            if (activeIngredient != null) activeIngredient = activeIngredient.trim().toLowerCase();
             if (dose != null) dose = dose.trim();
             if (form != null) form = form.trim().toLowerCase();
 
-            return new NormalizedDrug(activeIngredient, dose, form, notes);
+            return new NormalizedDrug(activeIngredients, dose, form, notes);
+
         } catch (Exception e) {
-            return new NormalizedDrug(null, null, null, "Failed to parse JSON from LLM: " + e.getMessage());
+            return new NormalizedDrug(Collections.emptyList(), null, null,
+                "Failed to parse JSON from LLM: " + e.getMessage());
         }
     }
 

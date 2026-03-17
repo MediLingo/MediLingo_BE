@@ -48,14 +48,14 @@ public class SymptomDrugGeminiService {
                     .block();
 
             if (raw == null || raw.isBlank()) {
-                return new NormalizedDrug(null, null, null, "LLM returned empty output");
+                return NormalizedDrug.ofSingle(null, null, null, "LLM returned empty output");
             }
 
             String text = extractTextFromGemini(raw);
             return parseNormalizedDrug(text);
 
         } catch (Exception e) {
-            return new NormalizedDrug(null, null, null, "LLM recommend failed: " + e.getMessage());
+            return NormalizedDrug.ofSingle(null, null, null, "LLM recommend failed: " + e.getMessage());
         }
     }
 
@@ -252,7 +252,7 @@ public class SymptomDrugGeminiService {
 
     private NormalizedDrug parseNormalizedDrug(String json) throws Exception {
         JsonNode node = objectMapper.readTree(json);
-        return new NormalizedDrug(
+        return NormalizedDrug.ofSingle(
                 asNullable(node.get("activeIngredient")),
                 asNullable(node.get("dose")),
                 asNullable(node.get("form")),

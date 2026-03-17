@@ -21,6 +21,8 @@ public enum ErrorCode {
     PINECONE_CONNECTION_FAIL(HttpStatus.NO_CONTENT.value(), "파인콘 연결에 실패했습니다."),
     RECOMMENDATION_FAIL(HttpStatus.NO_CONTENT.value(), "추천 설명에 실패했습니다."),
     STATS_NOT_FOUND(HttpStatus.NO_CONTENT.value(), "유저 통계 테이블이 존재하지 않습니다."),
+    OPENFDA_API_ERROR(HttpStatus.BAD_GATEWAY.value(), "OpenFDA API 호출에 실패했습니다."),
+    OPENFDA_RATE_LIMITED(HttpStatus.TOO_MANY_REQUESTS.value(), "OpenFDA API 호출 한도를 초과했습니다."),
     ;
 
     private final int status;
