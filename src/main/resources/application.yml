@@ -38,6 +38,9 @@ openfda:
 rximage:
   base-url: https://rximage.nlm.nih.gov
 
+dailymed:
+  base-url: https://dailymed.nlm.nih.gov
+
 logging:
   level:
     org.springframework.security: DEBUG

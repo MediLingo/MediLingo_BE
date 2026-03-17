@@ -18,7 +18,7 @@ public class SymptomDrugMappingService {
     private final SymptomDrugGeminiService geminiService;
     private final LocalDrugProductRepository localRepo;
     private final OpenFdaService openFdaService;
-    private final RxImageService rxImageService;
+    private final DailyMedImageService dailyMedImageService;
 
     public DrugTranslateResponse symptomDrugMapping(SymptomDrugMappingRequest req){
 
@@ -76,13 +76,13 @@ public class SymptomDrugMappingService {
     }
 
     /**
-     * Look up US drug products via OpenFDA, then enrich with RxImage pill images.
+     * Look up US drug products via OpenFDA, then enrich with DailyMed product images.
      */
     private List<LocalProductDto> lookupViaOpenFda(String ingredient) {
         List<OpenFdaService.DrugEntry> entries = openFdaService.searchByIngredientRich(ingredient, 10);
         return entries.stream()
                 .map(e -> {
-                    String imageUrl = rxImageService.fetchImageUrl(e.brandName());
+                    String imageUrl = dailyMedImageService.fetchImageUrl(e.splSetId());
                     return new LocalProductDto(null, e.displayName(), imageUrl, "OpenFDA");
                 })
                 .toList();

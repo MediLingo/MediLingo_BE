@@ -36,5 +36,17 @@ public class OpenFdaConfig {
                 .exchangeStrategies(strategies)
                 .build();
     }
+
+    @Bean
+    public WebClient dailyMedWebClient(@Value("${dailymed.base-url}") String baseUrl) {
+        ExchangeStrategies strategies = ExchangeStrategies.builder()
+                .codecs(cfg -> cfg.defaultCodecs().maxInMemorySize(1024 * 1024))
+                .build();
+
+        return WebClient.builder()
+                .baseUrl(baseUrl)
+                .exchangeStrategies(strategies)
+                .build();
+    }
 }
 

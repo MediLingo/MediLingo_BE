@@ -19,8 +19,10 @@ import java.util.Set;
  * Queries the OpenFDA Drug Labeling API (/drug/label.json) to find US drug
  * products matching a given active ingredient.
  *
- * We prefer OTC products first (product_type:"OTC"), then fall back to all
- * labeling records if OTC returns nothing.
+ * Strategy:
+ *  1. Search OTC products by substance name → deduplicate by brand name
+ *  2. Each DrugEntry now carries an NDC so RxImageService can do a precise NDC lookup
+ *  3. Fall back to all product types if OTC yields nothing
  */
 @Slf4j
 @Service
@@ -34,10 +36,12 @@ public class OpenFdaService {
     private String apiKey;
 
     /**
-     * A richer result entry that includes the raw brand name (used for RxImage lookup)
-     * alongside the formatted display name.
+     * Carries identifiers needed for image lookup and display.
+     * - brandName: raw brand name for fallback image search
+     * - splSetId: SPL set ID for DailyMed image lookup (most reliable)
+     * - displayName: formatted name shown to the user
      */
-    public record DrugEntry(String brandName, String displayName) {}
+    public record DrugEntry(String brandName, String splSetId, String displayName) {}
 
     /**
      * Search OpenFDA label.json for drug products containing the given active ingredient.
@@ -48,10 +52,10 @@ public class OpenFdaService {
             return List.of();
         }
 
-        // 1st attempt: OTC only
+        // 1st attempt: OTC only — most relevant for consumer use
         List<DrugEntry> results = queryLabel(activeIngredient, true, limit);
 
-        // 2nd attempt: all product types (includes Rx) if OTC returned nothing
+        // 2nd attempt: all product types if OTC returned nothing
         if (results.isEmpty()) {
             log.debug("No OTC results for '{}', retrying without OTC filter", activeIngredient);
             results = queryLabel(activeIngredient, false, limit);
@@ -72,7 +76,6 @@ public class OpenFdaService {
 
     private List<DrugEntry> queryLabel(String activeIngredient, boolean otcOnly, int limit) {
         try {
-            // OpenFDA uses Lucene query syntax. The URI builder will percent-encode spaces/quotes.
             String search = "openfda.substance_name:\"" + activeIngredient.toUpperCase() + "\"";
             if (otcOnly) {
                 search += " AND openfda.product_type:\"OTC\"";
@@ -120,39 +123,37 @@ public class OpenFdaService {
             if (!results.isArray()) return List.of();
 
             List<DrugEntry> entries = new ArrayList<>();
-            Set<String> seen = new LinkedHashSet<>();
+            // Deduplicate by brand name (case-insensitive) to avoid near-duplicate store brands
+            Set<String> seenBrands = new LinkedHashSet<>();
 
             for (JsonNode result : results) {
                 JsonNode openfdaNode = result.path("openfda");
 
-                // label.json brand_name / generic_name are under openfda.*
-                String brandName   = firstArrayValue(openfdaNode, "brand_name");
-                String genericName = firstArrayValue(openfdaNode, "generic_name");
+                String brandName    = firstArrayValue(openfdaNode, "brand_name");
+                String genericName  = firstArrayValue(openfdaNode, "generic_name");
                 String manufacturer = firstArrayValue(openfdaNode, "manufacturer_name");
+                String dosageForm   = firstArrayValue(openfdaNode, "dosage_form");
+                if (dosageForm == null) dosageForm = firstTextValue(result, "dosage_forms_and_strengths");
 
-                // Strength and form live at the top level in label.json
-                String strength   = firstTextValue(result, "dosage_and_administration_table",
-                                                   "active_ingredient"); // best-effort
-                String dosageForm = firstArrayValue(openfdaNode, "dosage_form");
-                if (dosageForm == null) {
-                    dosageForm = firstTextValue(result, "dosage_forms_and_strengths");
-                }
-
-                // For label.json the strength is often embedded inside active_ingredient section
-                String activeIngText = firstTextValue(result, "active_ingredient");
+                // Extract strength from the active_ingredient label text (most reliable for label.json)
+                String activeIngText  = firstTextValue(result, "active_ingredient");
                 String parsedStrength = parseStrengthFromText(activeIngText);
 
-                String displayName = buildDisplayName(
-                        brandName, genericName,
-                        parsedStrength != null ? parsedStrength : strength,
-                        dosageForm, manufacturer);
+                // Pick the primary display name
+                String primaryName = (brandName != null && !brandName.isBlank()) ? brandName : genericName;
+                if (primaryName == null) continue;
 
-                if (displayName == null || !seen.add(displayName.toLowerCase())) {
-                    continue;
-                }
+                // Deduplicate by brand name — avoids listing 10 store-brand "acetaminophen" entries
+                if (!seenBrands.add(primaryName.toLowerCase())) continue;
+
+                // Grab SPL set ID for DailyMed image lookup
+                String splSetId = firstArrayValue(openfdaNode, "spl_set_id");
+
+                String displayName = buildDisplayName(primaryName, parsedStrength, dosageForm, manufacturer);
+                if (displayName == null) continue;
 
                 String nameForImage = (brandName != null && !brandName.isBlank()) ? brandName : genericName;
-                entries.add(new DrugEntry(nameForImage, displayName));
+                entries.add(new DrugEntry(nameForImage, splSetId, displayName));
             }
 
             return entries;
@@ -163,37 +164,23 @@ public class OpenFdaService {
     }
 
     /**
-     * Extracts a short strength string (e.g. "500 mg") from the active_ingredient
-     * label text if present, e.g. "Active ingredient (in each tablet)\nAcetaminophen 500 mg"
+     * Extracts a short strength string from active_ingredient label text.
+     * e.g. "Active ingredient (in each tablet)\nAcetaminophen 500 mg" → "500 mg"
      */
     private String parseStrengthFromText(String text) {
         if (text == null || text.isBlank()) return null;
-        // Match a number followed by mg/mcg/g/mL
         java.util.regex.Matcher m = java.util.regex.Pattern
                 .compile("(\\d+(?:\\.\\d+)?\\s*(?:mg|mcg|g|mL|%|IU))", java.util.regex.Pattern.CASE_INSENSITIVE)
                 .matcher(text);
         return m.find() ? m.group(1).trim() : null;
     }
 
-    private String buildDisplayName(String brandName, String genericName,
-                                     String strength, String dosageForm, String manufacturer) {
-        StringBuilder sb = new StringBuilder();
-        if (brandName != null && !brandName.isBlank()) {
-            sb.append(brandName);
-        } else if (genericName != null && !genericName.isBlank()) {
-            sb.append(genericName);
-        } else {
-            return null;
-        }
-        if (strength != null && !strength.isBlank()) {
-            sb.append(" (").append(strength).append(")");
-        }
-        if (dosageForm != null && !dosageForm.isBlank()) {
-            sb.append(" — ").append(dosageForm);
-        }
-        if (manufacturer != null && !manufacturer.isBlank()) {
-            sb.append(" [").append(manufacturer).append("]");
-        }
+    private String buildDisplayName(String name, String strength, String dosageForm, String manufacturer) {
+        if (name == null || name.isBlank()) return null;
+        StringBuilder sb = new StringBuilder(name);
+        if (strength != null && !strength.isBlank()) sb.append(" (").append(strength).append(")");
+        if (dosageForm != null && !dosageForm.isBlank()) sb.append(" — ").append(dosageForm);
+        if (manufacturer != null && !manufacturer.isBlank()) sb.append(" [").append(manufacturer).append("]");
         return sb.toString();
     }
 
@@ -206,7 +193,6 @@ public class OpenFdaService {
         return null;
     }
 
-    /** Reads the first element of a top-level string array field (label.json style). */
     private String firstTextValue(JsonNode node, String... fieldNames) {
         for (String fieldName : fieldNames) {
             JsonNode n = node.path(fieldName);

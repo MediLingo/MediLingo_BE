@@ -23,7 +23,7 @@ public class DrugTranslateService {
     private final DrugFallbackMappingService fallbackMappingService;
     private final DrugSearchLogRepository drugSearchLogRepository;
     private final OpenFdaService openFdaService;
-    private final RxImageService rxImageService;
+    private final DailyMedImageService dailyMedImageService;
 
     public DrugTranslateResponse translate(DrugTranslateRequest req) {
         final String country = normalizeCountry(req.countryCode());
@@ -108,14 +108,14 @@ public class DrugTranslateService {
 
     /**
      * Look up US drug products via OpenFDA, then enrich each result
-     * with a pill image URL from RxImage using the raw brand name.
+     * with a product image from DailyMed using the SPL set ID.
      */
     private List<LocalProductDto> lookupViaOpenFda(String primaryIngredient) {
         List<OpenFdaService.DrugEntry> entries = openFdaService.searchByIngredientRich(primaryIngredient, 10);
 
         return entries.stream()
                 .map(e -> {
-                    String imageUrl = rxImageService.fetchImageUrl(e.brandName());
+                    String imageUrl = dailyMedImageService.fetchImageUrl(e.splSetId());
                     return new LocalProductDto(null, e.displayName(), imageUrl, "OpenFDA");
                 })
                 .toList();
