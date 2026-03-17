@@ -26,11 +26,11 @@ jobs:
       - name: Build jar
         run: ./gradlew clean bootJar -x test
 
-      - name: Prepare SSH key
+      - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/medilingo.pem
-          chmod 600 ~/.ssh/medilingo.pem
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
       - name: Upload jar to EC2
