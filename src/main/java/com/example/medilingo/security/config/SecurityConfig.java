@@ -45,7 +45,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
 
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                        .requestMatchers("/api/auth/signup", "/api/auth/login").permitAll()
+                        .requestMatchers("/api/auth/signup", "/api/auth/login","/", "/error").permitAll()
                         //.requestMatchers(HttpMethod.POST, "/api/papers/**").authenticated()
                         // Swagger 허용
                         .requestMatchers(
