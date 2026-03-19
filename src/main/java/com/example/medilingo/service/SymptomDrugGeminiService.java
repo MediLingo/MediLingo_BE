@@ -10,6 +10,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -48,14 +50,14 @@ public class SymptomDrugGeminiService {
                     .block();
 
             if (raw == null || raw.isBlank()) {
-                return NormalizedDrug.ofSingle(null, null, null, "LLM returned empty output");
+                return new NormalizedDrug(Collections.emptyList(), null, null, "LLM returned empty output");
             }
 
             String text = extractTextFromGemini(raw);
             return parseNormalizedDrug(text);
 
         } catch (Exception e) {
-            return NormalizedDrug.ofSingle(null, null, null, "LLM recommend failed: " + e.getMessage());
+            return new NormalizedDrug(Collections.emptyList(), null, null, "LLM recommend failed: " + e.getMessage());
         }
     }
 
@@ -64,31 +66,34 @@ public class SymptomDrugGeminiService {
             You are a strict JSON generator.
             
             Task:
-            Given a user's symptoms (and optional patient/constraints), suggest ONE common OVER-THE-COUNTER (OTC) active ingredient
-            that is reasonably appropriate for symptomatic relief in the target country.
+            Given a user's symptoms (and optional patient/constraints), suggest common OVER-THE-COUNTER (OTC) active ingredients
+            that are reasonably appropriate for symptomatic relief in the target country.
             This is NOT a diagnosis. Do NOT suggest prescription-only drugs.
             
             Return ONLY a valid JSON object with exactly these keys:
-            - activeIngredient: string or null
-              * Use the INN / generic ingredient name in English (lowercase), e.g. "acetaminophen", "ibuprofen", "loratadine", "dextromethorphan".
-              * If you cannot suggest a safe/common OTC ingredient with reasonable confidence, output null.
+            - activeIngredients: array of strings or empty array []
+              * List active ingredients using INN / generic names in English (lowercase), e.g. ["acetaminophen"], ["ibuprofen", "pseudoephedrine"].
+              * Order them from PRIMARY (most therapeutically significant) to SECONDARY.
+              * If you cannot suggest a safe/common OTC ingredient with reasonable confidence, return an empty array [].
+              * For single-symptom cases, usually one ingredient is sufficient.
+              * For multi-symptom cases (e.g. cold with headache + congestion), you may list up to 2-3 ingredients if appropriate.
             - dose: string or null
-              * If you can state a typical OTC adult strength/dose form factor, provide a short value like "500mg" or "10mg".
+              * If you can state a typical OTC adult strength/dose, provide a short value like "500mg" or "10mg".
+              * If multiple doses exist for multiple ingredients, list them comma-separated.
               * If age is missing or patient is a minor, or you are unsure, output null.
             - form: string or null
               * Choose ONLY from: "tablet", "capsule", "syrup", "ointment", "patch", "spray", "drops", or null.
             - notes: string
               * Short reasoning (1–3 sentences) explaining symptom→ingredient choice and key cautions.
               * Mention if constraints affected the choice (allergies/current meds/pregnancy).
-              * If activeIngredient is null, explain why and suggest what extra info is needed.
+              * If activeIngredients is empty, explain why and suggest what extra info is needed.
             
             HARD RULES (must follow):
             1) Output JSON only (no markdown, no code fences, no extra text).
-            2) Use null (not empty string) when a value is missing.
+            2) Use null (not empty string) when a value is missing. Use [] (not null) for missing ingredients.
             3) OTC ONLY. If unsure whether OTC in the target country, be conservative.
             4) Do NOT recommend an ingredient that appears in allergies (case-insensitive).
             5) If pregnant=true, be conservative; avoid risky meds and mention pregnancy in notes.
-            6) Do NOT output multiple active ingredients (no combo products). Choose ONE or null.
             
             Target countryCode: "%s"
             
@@ -96,7 +101,7 @@ public class SymptomDrugGeminiService {
             %s
             
             Example output format (do not copy content, only format):
-            {"activeIngredient":"acetaminophen","dose":"500mg","form":"tablet","notes":"..."}
+            {"activeIngredients":["acetaminophen"],"dose":"500mg","form":"tablet","notes":"..."}
             """
                 .formatted(
                         safe(req.countryCode()).toUpperCase(),
@@ -252,12 +257,32 @@ public class SymptomDrugGeminiService {
 
     private NormalizedDrug parseNormalizedDrug(String json) throws Exception {
         JsonNode node = objectMapper.readTree(json);
-        return NormalizedDrug.ofSingle(
-                asNullable(node.get("activeIngredient")),
-                asNullable(node.get("dose")),
-                asNullable(node.get("form")),
-                node.path("notes").asText("")
-        );
+
+        List<String> activeIngredients = new ArrayList<>();
+        JsonNode ingredientsNode = node.get("activeIngredients");
+        if (ingredientsNode != null && ingredientsNode.isArray()) {
+            for (JsonNode ingredient : ingredientsNode) {
+                String val = ingredient.asText(null);
+                if (val != null && !val.isBlank()) {
+                    activeIngredients.add(val.trim().toLowerCase());
+                }
+            }
+        } else {
+            // Fallback: handle legacy single activeIngredient field
+            String single = asNullable(node.get("activeIngredient"));
+            if (single != null) {
+                activeIngredients.add(single.trim().toLowerCase());
+            }
+        }
+
+        String dose = asNullable(node.get("dose"));
+        String form = asNullable(node.get("form"));
+        String notes = node.path("notes").asText("");
+
+        if (dose != null) dose = dose.trim();
+        if (form != null) form = form.trim().toLowerCase();
+
+        return new NormalizedDrug(activeIngredients, dose, form, notes);
     }
 
     private String asNullable(JsonNode n) {

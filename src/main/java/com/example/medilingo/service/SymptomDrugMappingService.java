@@ -25,9 +25,18 @@ public class SymptomDrugMappingService {
         NormalizedDrug normalized = geminiService.recommendFromSymptoms(req);
         String country = normalizeCountry(req.countryCode());
 
-        if (normalized.activeIngredient() == null){
+        // No ingredients identified → return empty result with guidance
+        if (normalized.activeIngredients() == null || normalized.activeIngredients().isEmpty()){
             return new DrugTranslateResponse(
-                    normalized,
+                    new NormalizedDrug(
+                            List.of(),
+                            normalized.dose(),
+                            normalized.form(),
+                            normalizeNotes(mergeNotes(
+                                    normalized.notes(),
+                                    "증상에 맞는 성분을 추천하기 어려워요. 증상을 좀 더 구체적으로 입력해 주세요."
+                            ))
+                    ),
                     List.of(),
                     disclaimer()
             );
@@ -37,12 +46,12 @@ public class SymptomDrugMappingService {
         List<LocalProductDto> products;
 
         if ("US".equals(country)) {
-            products = lookupViaOpenFda(normalized.activeIngredient());
+            products = lookupViaOpenFda(normalized.primaryIngredient());
         } else {
             products = localRepo
                     .findTop10ByCountryCodeAndActiveIngredientOrderByIdDesc(
                             country,
-                            normalized.activeIngredient().toLowerCase()
+                            normalized.primaryIngredient().toLowerCase()
                     )
                     .stream()
                     .map(p -> new LocalProductDto(p.getId(), p.getLocalName(), p.getImageUrl(), p.getSource()))
@@ -50,8 +59,8 @@ public class SymptomDrugMappingService {
         }
 
         if (products.isEmpty()) {
-            NormalizedDrug finalNormalized = NormalizedDrug.ofSingle(
-                    normalized.activeIngredient(),
+            NormalizedDrug finalNormalized = new NormalizedDrug(
+                    normalized.activeIngredients(),
                     normalized.dose(),
                     normalized.form(),
                     normalizeNotes(
