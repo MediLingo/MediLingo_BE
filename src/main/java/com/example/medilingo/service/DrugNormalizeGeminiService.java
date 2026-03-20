@@ -4,7 +4,9 @@ import com.example.medilingo.controller.drug.response.NormalizedDrug;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 
@@ -13,6 +15,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class DrugNormalizeGeminiService {
@@ -27,7 +30,12 @@ public class DrugNormalizeGeminiService {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    @Cacheable(
+        cacheNames = "drugNormalizations",
+        key = "#koreanDrugText.toLowerCase()"
+    )
     public NormalizedDrug normalize(String koreanDrugText) {
+        log.info("Cache MISS — calling Gemini for normalization: {}", koreanDrugText);
         String prompt = buildPrompt(koreanDrugText);
 
         // Gemini 요청 포맷

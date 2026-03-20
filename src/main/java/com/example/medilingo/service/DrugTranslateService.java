@@ -1,6 +1,7 @@
 package com.example.medilingo.service;
 
 import com.example.medilingo.controller.drug.request.DrugTranslateRequest;
+import com.example.medilingo.controller.drug.response.DrugEntry;
 import com.example.medilingo.controller.drug.response.DrugTranslateResponse;
 import com.example.medilingo.controller.drug.response.LocalProductDto;
 import com.example.medilingo.controller.drug.response.NormalizedDrug;
@@ -111,7 +112,7 @@ public class DrugTranslateService {
      * with a product image from DailyMed using the SPL set ID.
      */
     private List<LocalProductDto> lookupViaOpenFda(String primaryIngredient) {
-        List<OpenFdaService.DrugEntry> entries = openFdaService.searchByIngredientRich(primaryIngredient, 10);
+        List<DrugEntry> entries = openFdaService.searchByIngredientRich(primaryIngredient, 10);
 
         return entries.stream()
                 .map(e -> {

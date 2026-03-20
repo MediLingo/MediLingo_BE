@@ -1,6 +1,7 @@
 package com.example.medilingo.service;
 
 import com.example.medilingo.controller.drug.request.SymptomDrugMappingRequest;
+import com.example.medilingo.controller.drug.response.DrugEntry;
 import com.example.medilingo.controller.drug.response.DrugTranslateResponse;
 import com.example.medilingo.controller.drug.response.LocalProductDto;
 import com.example.medilingo.controller.drug.response.NormalizedDrug;
@@ -88,7 +89,7 @@ public class SymptomDrugMappingService {
      * Look up US drug products via OpenFDA, then enrich with DailyMed product images.
      */
     private List<LocalProductDto> lookupViaOpenFda(String ingredient) {
-        List<OpenFdaService.DrugEntry> entries = openFdaService.searchByIngredientRich(ingredient, 10);
+        List<DrugEntry> entries = openFdaService.searchByIngredientRich(ingredient, 10);
         return entries.stream()
                 .map(e -> {
                     String imageUrl = dailyMedImageService.fetchImageUrl(e.splSetId());
