@@ -47,6 +47,7 @@ public class OpenFdaService {
      * Search OpenFDA label.json for drug products containing the given active ingredient.
      * Tries OTC-only first; falls back to all product types if OTC yields nothing.
      */
+    
     public List<DrugEntry> searchByIngredientRich(String activeIngredient, int limit) {
         if (activeIngredient == null || activeIngredient.isBlank()) {
             return List.of();
