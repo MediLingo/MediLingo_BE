@@ -1,8 +1,8 @@
 package com.example.medilingo.service;
 
 import com.example.medilingo.controller.drug.request.SymptomDrugMappingRequest;
-import com.example.medilingo.controller.drug.response.LocalProductDto;
 import com.example.medilingo.controller.drug.response.NormalizedDrug;
+import com.example.medilingo.controller.drug.response.SymptomIngredientMatch;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -28,218 +28,152 @@ public class SymptomDrugGeminiService {
     @Value("${gemini.model:gemini-2.5-flash}")
     private String model;
 
-    public NormalizedDrug recommendFromSymptoms(SymptomDrugMappingRequest req) {
+    // Bundles the parsed ingredient list (as NormalizedDrug) with the
+    // per-ingredient match details (symptomsCovered + reason) needed for
+    // building recommendation reasons and coverage warnings downstream.
+    public record SymptomMappingResult(
+        NormalizedDrug normalizedDrug,
+        List<SymptomIngredientMatch> matches
+    ) {}
+
+    public SymptomMappingResult recommendFromSymptoms(SymptomDrugMappingRequest req) {
         String prompt = buildPrompt(req);
 
         Map<String, Object> body = Map.of(
-                "contents", List.of(
-                        Map.of("parts", List.of(Map.of("text", prompt)))
-                ),
-                "generationConfig", Map.of(
-                        "responseMimeType", "application/json",
-                        "temperature", 0.2
-                )
+            "contents", List.of(
+                Map.of("parts", List.of(Map.of("text", prompt)))
+            ),
+            "generationConfig", Map.of(
+                "responseMimeType", "application/json",
+                "temperature", 0.2,
+                "maxOutputTokens", 8192
+            )
         );
 
         try {
             String raw = geminiWebClient.post()
-                    .uri("/models/{model}:generateContent?key={key}", model, geminiApiKey)
-                    .bodyValue(body)
-                    .retrieve()
-                    .bodyToMono(String.class)
-                    .block();
+                .uri("/models/{model}:generateContent?key={key}", model, geminiApiKey)
+                .bodyValue(body)
+                .retrieve()
+                .bodyToMono(String.class)
+                .block();
 
             if (raw == null || raw.isBlank()) {
-                return new NormalizedDrug(Collections.emptyList(), null, null, "LLM returned empty output");
+                return emptyResult("LLM returned empty output");
             }
 
             String text = extractTextFromGemini(raw);
-            return parseNormalizedDrug(text);
+            if (text == null || text.isBlank()) {
+                return emptyResult("LLM returned empty text");
+            }
+            try {
+                return parseResult(text);
+            } catch (Exception parseEx) {
+                return emptyResult("LLM response could not be parsed (possibly truncated): " + parseEx.getMessage());
+            }
 
         } catch (Exception e) {
-            return new NormalizedDrug(Collections.emptyList(), null, null, "LLM recommend failed: " + e.getMessage());
+            return emptyResult("LLM recommend failed: " + e.getMessage());
         }
     }
 
     private String buildPrompt(SymptomDrugMappingRequest req) {
         return """
             You are a strict JSON generator.
-            
+
             Task:
-            Given a user's symptoms (and optional patient/constraints), suggest common OVER-THE-COUNTER (OTC) active ingredients
-            that are reasonably appropriate for symptomatic relief in the target country.
-            This is NOT a diagnosis. Do NOT suggest prescription-only drugs.
-            
+            Given a user's symptoms (and optional constraints), suggest common OTC active ingredients
+            for symptomatic relief in the target country. This is NOT a diagnosis.
+
             Return ONLY a valid JSON object with exactly these keys:
-            - activeIngredients: array of strings or empty array []
-              * List active ingredients using INN / generic names in English (lowercase), e.g. ["acetaminophen"], ["ibuprofen", "pseudoephedrine"].
-              * Order them from PRIMARY (most therapeutically significant) to SECONDARY.
-              * If you cannot suggest a safe/common OTC ingredient with reasonable confidence, return an empty array [].
-              * For single-symptom cases, usually one ingredient is sufficient.
-              * For multi-symptom cases (e.g. cold with headache + congestion), you may list up to 2-3 ingredients if appropriate.
+            - matches: array of objects or empty array []
+              * Each object has:
+                - ingredient: string (INN/generic name, lowercase, e.g. "acetaminophen")
+                - symptomsCovered: string (comma-separated symptoms this ingredient addresses, in the user's language)
+                - reason: string (1 sentence explaining why this ingredient, in the user's language)
+              * Order from PRIMARY to SECONDARY ingredient.
+              * Consolidate where possible — if acetaminophen covers both headache and fever, list both in symptomsCovered.
+              * Return empty [] if no safe OTC ingredient can be identified.
             - dose: string or null
-              * If you can state a typical OTC adult strength/dose, provide a short value like "500mg" or "10mg".
-              * If multiple doses exist for multiple ingredients, list them comma-separated.
-              * If age is missing or patient is a minor, or you are unsure, output null.
-            - form: string or null
-              * Choose ONLY from: "tablet", "capsule", "syrup", "ointment", "patch", "spray", "drops", or null.
-            - notes: string
-              * Short reasoning (1–3 sentences) explaining symptom→ingredient choice and key cautions.
-              * Mention if constraints affected the choice (allergies/current meds/pregnancy).
-              * If activeIngredients is empty, explain why and suggest what extra info is needed.
-            
-            HARD RULES (must follow):
-            1) Output JSON only (no markdown, no code fences, no extra text).
-            2) Use null (not empty string) when a value is missing. Use [] (not null) for missing ingredients.
-            3) OTC ONLY. If unsure whether OTC in the target country, be conservative.
-            4) Do NOT recommend an ingredient that appears in allergies (case-insensitive).
-            5) If pregnant=true, be conservative; avoid risky meds and mention pregnancy in notes.
-            
-            Target countryCode: "%s"
-            
-            User input JSON:
-            %s
-            
-            Example output format (do not copy content, only format):
-            {"activeIngredients":["acetaminophen"],"dose":"500mg","form":"tablet","notes":"..."}
-            """
-                .formatted(
-                        safe(req.countryCode()).toUpperCase(),
-                        toJson(req)
-                );
-    }
+            - form: string or null (only: "tablet","capsule","syrup","ointment","patch","spray","drops")
+            - notes: string (overall cautions, constraints applied, etc.)
 
-//    public List<LocalProductDto> recommendLocalProducts(String countryCode, NormalizedDrug normalized) {
-//        if (normalized == null || isBlank(normalized.activeIngredient())) {
-//            return List.of();
-//        }
-//
-//        String prompt = buildLocalProductsPrompt(countryCode, normalized);
-//
-//        Map<String, Object> body = Map.of(
-//                "contents", List.of(
-//                        Map.of("parts", List.of(Map.of("text", prompt)))
-//                ),
-//                "generationConfig", Map.of(
-//                        "responseMimeType", "application/json",
-//                        "temperature", 0.2
-//                )
-//        );
-//
-//        try {
-//            String raw = geminiWebClient.post()
-//                    .uri("/models/{model}:generateContent?key={key}", model, geminiApiKey)
-//                    .bodyValue(body)
-//                    .retrieve()
-//                    .bodyToMono(String.class)
-//                    .block();
-//
-//            if (raw == null || raw.isBlank()) return List.of();
-//
-//            String text = extractTextFromGemini(raw);
-//            if (text == null || text.isBlank()) return List.of();
-//
-//            return parseLocalProducts(text);
-//
-//        } catch (Exception e) {
-//            return List.of();
-//        }
-//    }
-
-    private String buildLocalProductsPrompt(String countryCode, NormalizedDrug normalized) {
-        return """
-            You are a strict JSON generator.
-            
-            Task:
-            Given a target country and a normalized active ingredient (generic/INN), suggest up to 3 plausible OTC product names
-            commonly sold in that country that match the ingredient (or commonly contain it as the primary active ingredient).
-            
-            Return ONLY valid JSON as an array of objects.
-            Each object MUST have exactly these keys:
-            - name: string
-            - imageUrl: null
-            - source: string  (MUST be exactly "gemini")
-            
             HARD RULES:
             1) Output JSON only (no markdown, no code fences, no extra text).
-            2) Output MUST be a JSON array (even if empty).
-            3) imageUrl:
-               - Use a publicly accessible image URL if you are reasonably confident.
-               - Prefer official product pages or major retailers.
-               - If unsure, set imageUrl to null.
-            4) source MUST be exactly "gemini".
-            5) If activeIngredient is null/blank, return [].
-            6) Prefer real consumer-facing product names in the language/script used in that country.
-            7) Do NOT include prescription-only products. If unsure, omit.
-            8) Do NOT include combo cold/flu products unless you are confident the ingredient is the primary one.
-            
+            2) Use null for missing scalars. Use [] for missing matches.
+            3) OTC ONLY. Conservative if unsure.
+            4) Do NOT recommend ingredients listed in allergies.
+            5) If pregnant=true, be conservative and mention in notes.
+
             Target countryCode: "%s"
-            
-            NormalizedDrug JSON:
-            {"activeIngredient": %s, "dose": %s, "form": %s, "notes": %s}
-            
-            Example output format:
-            [
-              {"name":"<product name 1>", "imageUrl":"https://...", "source":"gemini"},
-              {"name":"<product name 2>", "imageUrl":null, "source":"gemini"}
-            ]
+            User input JSON: %s
+
+            Example output:
+            {
+              "matches": [
+                {"ingredient":"acetaminophen","symptomsCovered":"두통, 발열","reason":"acetaminophen은 두통과 발열에 효과적인 OTC 진통해열제입니다."},
+                {"ingredient":"pseudoephedrine","symptomsCovered":"코막힘","reason":"pseudoephedrine은 코막힘 완화에 사용되는 충혈완화제입니다."}
+              ],
+              "dose": "500mg",
+              "form": "tablet",
+              "notes": "..."
+            }
             """
-                .formatted(
-                        safe(countryCode).toUpperCase(),
-                        jsonStringOrNull(normalized.activeIngredient()),
-                        jsonStringOrNull(normalized.dose()),
-                        jsonStringOrNull(normalized.form()),
-                        jsonStringOrNull(normalized.notes())
-                );
+            .formatted(
+                safe(req.countryCode()).toUpperCase(),
+                toJson(req)
+            );
     }
 
-//    private List<LocalProductDto> parseLocalProducts(String jsonArray) throws Exception {
-//        JsonNode arr = objectMapper.readTree(jsonArray);
-//        if (!arr.isArray()) return List.of();
-//
-//        List<LocalProductDto> out = new java.util.ArrayList<>();
-//        for (JsonNode p : arr) {
-//            String name = asNullable(p.get("name"));
-//            if (isBlank(name)) continue;
-//
-//            // Enforce MVP rules even if Gemini deviates
-//            out.add(new LocalProductDto(
-//                    name,
-//                    sanitizeImageUrl(asNullable(p.get("imageUrl"))),
-//                    "gemini"));
-//        }
-//        return out;
-//    }
+    // Parses the matches array from Gemini's response into SymptomMappingResult.
+    // activeIngredients in NormalizedDrug is derived from the matches array
+    // so both structures stay in sync — no risk of them diverging.
+    private SymptomMappingResult parseResult(String json) throws Exception {
+        JsonNode node = objectMapper.readTree(json);
 
-    private String sanitizeImageUrl(String url) {
-        if (url == null) return null;
+        List<SymptomIngredientMatch> matches = new ArrayList<>();
+        List<String> activeIngredients = new ArrayList<>();
 
-        String s = url.trim();
-        if (s.isBlank()) return null;
-
-        // only allow http(s)
-        if (!(s.startsWith("http://") || s.startsWith("https://"))) {
-            return null;
+        JsonNode matchesNode = node.get("matches");
+        if (matchesNode != null && matchesNode.isArray()) {
+            for (JsonNode m : matchesNode) {
+                String ingredient = asNullable(m.get("ingredient"));
+                String symptomsCovered = asNullable(m.get("symptomsCovered"));
+                String reason = asNullable(m.get("reason"));
+                if (ingredient != null) {
+                    ingredient = ingredient.toLowerCase();
+                    activeIngredients.add(ingredient);
+                    matches.add(new SymptomIngredientMatch(ingredient, symptomsCovered, reason));
+                }
+            }
         }
 
-        // optional: basic length guard
-        if (s.length() > 500) return null;
+        String dose  = asNullable(node.get("dose"));
+        String form  = asNullable(node.get("form"));
+        String notes = node.path("notes").asText("");
 
-        return s;
+        if (dose != null) dose = dose.trim();
+        if (form != null) form = form.trim().toLowerCase();
+
+        return new SymptomMappingResult(
+            new NormalizedDrug(activeIngredients, dose, form, notes),
+            matches
+        );
     }
 
-    private boolean isBlank(String s) {
-        return s == null || s.trim().isBlank();
+    private SymptomMappingResult emptyResult(String reason) {
+        return new SymptomMappingResult(
+            new NormalizedDrug(Collections.emptyList(), null, null, reason),
+            List.of()
+        );
     }
 
-    private String jsonStringOrNull(String s) {
-        if (s == null || s.trim().isBlank()) return "null";
-        // escape quotes minimally
-        return "\"" + s.trim().replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    private String extractTextFromGemini(String rawResponse) throws Exception {
+        JsonNode root = objectMapper.readTree(rawResponse);
+        JsonNode parts = root.path("candidates").get(0).path("content").path("parts");
+        return parts.get(0).path("text").asText(null);
     }
 
-
-    // helpers you likely already have (or add)
     private String safe(String s) {
         return s == null ? "" : s.trim();
     }
@@ -249,46 +183,9 @@ public class SymptomDrugGeminiService {
         catch (Exception e) { return "{}"; }
     }
 
-    private String extractTextFromGemini(String rawResponse) throws Exception {
-        JsonNode root = objectMapper.readTree(rawResponse);
-        JsonNode parts = root.path("candidates").get(0).path("content").path("parts");
-        return parts.get(0).path("text").asText(null);
-    }
-
-    private NormalizedDrug parseNormalizedDrug(String json) throws Exception {
-        JsonNode node = objectMapper.readTree(json);
-
-        List<String> activeIngredients = new ArrayList<>();
-        JsonNode ingredientsNode = node.get("activeIngredients");
-        if (ingredientsNode != null && ingredientsNode.isArray()) {
-            for (JsonNode ingredient : ingredientsNode) {
-                String val = ingredient.asText(null);
-                if (val != null && !val.isBlank()) {
-                    activeIngredients.add(val.trim().toLowerCase());
-                }
-            }
-        } else {
-            // Fallback: handle legacy single activeIngredient field
-            String single = asNullable(node.get("activeIngredient"));
-            if (single != null) {
-                activeIngredients.add(single.trim().toLowerCase());
-            }
-        }
-
-        String dose = asNullable(node.get("dose"));
-        String form = asNullable(node.get("form"));
-        String notes = node.path("notes").asText("");
-
-        if (dose != null) dose = dose.trim();
-        if (form != null) form = form.trim().toLowerCase();
-
-        return new NormalizedDrug(activeIngredients, dose, form, notes);
-    }
-
     private String asNullable(JsonNode n) {
         if (n == null || n.isNull()) return null;
         String s = n.asText().trim();
         return s.isBlank() ? null : s;
     }
 }
-
