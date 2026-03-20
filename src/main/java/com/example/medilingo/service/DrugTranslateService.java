@@ -1,28 +1,32 @@
 package com.example.medilingo.service;
 
 import com.example.medilingo.controller.drug.request.DrugTranslateRequest;
-import com.example.medilingo.controller.drug.response.DrugEntry;
 import com.example.medilingo.controller.drug.response.DrugTranslateResponse;
 import com.example.medilingo.controller.drug.response.LocalProductDto;
 import com.example.medilingo.controller.drug.response.NormalizedDrug;
-import com.example.medilingo.domain.drug.DrugSearchLog;
-import com.example.medilingo.domain.drug.repository.DrugSearchLogRepository;
 import com.example.medilingo.domain.drug.repository.LocalDrugProductRepository;
+import com.example.medilingo.util.DrugMatchingUtils;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class DrugTranslateService {
     private final DrugNormalizeGeminiService drugNormalizeService;
+    private final DrugExplainService drugExplainService;
     private final LocalDrugProductRepository localRepo;
     private final DrugFallbackMappingService fallbackMappingService;
-    private final DrugSearchLogRepository drugSearchLogRepository;
     private final OpenFdaService openFdaService;
     private final DailyMedImageService dailyMedImageService;
 
@@ -73,19 +77,28 @@ public class DrugTranslateService {
 
         // 4) Look up drug products — OpenFDA for US, local DB for others
         List<LocalProductDto> products;
+        List<String> allTargetIngredients = normalized.activeIngredients();
+
+        // Pre-fetch cached explanations for each ingredient (reuses /explain cache)
+        Map<String, String> explanations = fetchExplanations(allTargetIngredients, normalized.form());
 
         if ("US".equals(country)) {
-            products = lookupViaOpenFda(normalized.primaryIngredient());
+            products = lookupViaOpenFda(allTargetIngredients, explanations);
         } else {
-            products = localRepo
-                .findTop10ByCountryCodeAndActiveIngredientOrderByIdDesc(
-                    country,
-                    normalized.primaryIngredient().toLowerCase()
-                )
-                .stream()
-                .map(p -> new LocalProductDto(p.getId(), p.getLocalName(), p.getImageUrl(), p.getSource()))
-                .toList();
+            products = lookupViaLocalRepo(country, normalized.primaryIngredient(), allTargetIngredients, explanations);
         }
+
+        // After products are built, check if all are partial
+        boolean allPartial = allTargetIngredients.size() > 1 &&
+            products.stream().allMatch(p ->
+                p.matchScore() != null && p.matchScore() < allTargetIngredients.size());
+
+        String notes = allPartial
+            ? normalizeNotes(mergeNotes(
+                normalized.notes(),
+                "해당 국가에서 동일한 복합 성분 제품을 찾을 수 없었어요. 아래 약들을 조합하면 비슷한 효과를 얻을 수 있어요."
+            ))
+            : normalizeNotes(normalized.notes());
 
         // 5) products empty → notes 보강
         if (products.isEmpty()) {
@@ -94,10 +107,7 @@ public class DrugTranslateService {
                     normalized.activeIngredients(),
                     normalized.dose(),
                     normalized.form(),
-                    normalizeNotes(mergeNotes(
-                        normalized.notes(),
-                        "해당 국가의 데이터가 아직 부족해요. (seed 데이터 확장 예정)"
-                    ))
+                    notes
                 ),
                 products,
                 disclaimer()
@@ -107,34 +117,96 @@ public class DrugTranslateService {
         return new DrugTranslateResponse(normalized, products, disclaimer());
     }
 
+    // Differs from symptom flow warning — framed around the original drug's ingredients
+    private static final String COVERAGE_WARNING_CONTEXT = "원래 약의 성분 중 ";
+
     /**
      * Look up US drug products via OpenFDA, then enrich each result
      * with a product image from DailyMed using the SPL set ID.
+     * Queries once per ingredient, deduplicates by splSetId,
+     * then sorts by overlap score so combination drugs surface first.
      */
-    private List<LocalProductDto> lookupViaOpenFda(String primaryIngredient) {
-        List<DrugEntry> entries = openFdaService.searchByIngredientRich(primaryIngredient, 10);
+    private List<LocalProductDto> lookupViaOpenFda(
+        List<String> targetIngredients,
+        Map<String, String> explanations) {
 
-        return entries.stream()
-                .map(e -> {
-                    String imageUrl = dailyMedImageService.fetchImageUrl(e.splSetId());
-                    return new LocalProductDto(null, e.displayName(), imageUrl, "OpenFDA");
-                })
-                .toList();
+        Set<String> seenSplIds = new LinkedHashSet<>();
+
+        return targetIngredients.stream()
+            .flatMap(ingredient ->
+                openFdaService.searchByIngredientRich(ingredient, 5).stream())
+            .filter(e -> e.splSetId() == null || seenSplIds.add(e.splSetId()))
+            .map(e -> DrugMatchingUtils.buildProductDto(
+                null,
+                e.displayName(),
+                dailyMedImageService.fetchImageUrl(e.splSetId()),
+                "OpenFDA",
+                DrugMatchingUtils.buildReasonFromExplanations(e.allIngredients(), targetIngredients, explanations),
+                e.allIngredients(),
+                targetIngredients,
+                COVERAGE_WARNING_CONTEXT))
+            .sorted(byMatchScoreDesc())
+            .limit(10)
+            .toList();
     }
 
+    /**
+     * Local repo path — same overlap scoring as OpenFDA path via DrugMatchingUtils.
+     */
+    private List<LocalProductDto> lookupViaLocalRepo(
+        String country,
+        String primaryIngredient,
+        List<String> targetIngredients,
+        Map<String, String> explanations) {
 
-    // Counts how many of the candidate drug's ingredients appear in the Korean drug's ingredient list
-    private int countOverlap(List<String> candidateIngredients, List<String> koreanIngredients) {
-        if (candidateIngredients == null || candidateIngredients.isEmpty()) return 0;
-        return (int) candidateIngredients.stream()
-            .filter(ci -> koreanIngredients.stream()
-                .anyMatch(ki -> ki.equalsIgnoreCase(ci)))
-            .count();
+        return localRepo
+            .findTop10ByCountryCodeAndActiveIngredientOrderByIdDesc(
+                country,
+                primaryIngredient.toLowerCase())
+            .stream()
+            .map(p -> DrugMatchingUtils.buildProductDto(
+                p.getId(),
+                p.getLocalName(),
+                p.getImageUrl(),
+                p.getSource(),
+                DrugMatchingUtils.buildReasonFromExplanations(p.getAllIngredients(), targetIngredients, explanations),
+                p.getAllIngredients(),
+                targetIngredients,
+                COVERAGE_WARNING_CONTEXT))
+            .sorted(byMatchScoreDesc())
+            .toList();
+    }
+
+    private Comparator<LocalProductDto> byMatchScoreDesc() {
+        return Comparator.comparingInt(
+            (LocalProductDto p) -> p.matchScore() != null ? p.matchScore() : 0
+        ).reversed();
     }
 
     /* =========================
-       Helper methods (unchanged)
+       Helper methods
        ========================= */
+
+    /**
+     * Pre-fetches a plain-language Gemini explanation for each target ingredient.
+     * Reuses DrugExplainService.explain() which is Redis-cached, so repeated
+     * calls for the same ingredient are free after the first request.
+     * Returns a Map of lowercase ingredient → explanation text.
+     */
+    private Map<String, String> fetchExplanations(List<String> ingredients, String form) {
+        Map<String, String> map = new LinkedHashMap<>();
+        for (String ingredient : ingredients) {
+            try {
+                String explanation = drugExplainService.explain(ingredient, form, "ko");
+                if (explanation != null && !explanation.isBlank()) {
+                    map.put(ingredient.toLowerCase(), explanation.trim());
+                }
+            } catch (Exception e) {
+                log.warn("Failed to fetch explanation for {}: {}", ingredient, e.getMessage());
+            }
+        }
+        return map;
+    }
 
     private String disclaimer() {
         return "현지 성분/용량은 국가별로 다를 수 있어요. 복용 전 라벨 확인 및 약사/의사 상담을 권장합니다.";

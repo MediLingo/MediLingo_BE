@@ -5,5 +5,6 @@ import java.util.List;
 public record DrugEntry(
 	String brandName,
 	String splSetId,
-	String displayName
+	String displayName,
+	List<String> allIngredients
 ) {}

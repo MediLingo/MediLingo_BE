@@ -6,4 +6,5 @@ public record DrugTranslateResponse(
         NormalizedDrug normalized,
         List<LocalProductDto> localProducts,
         String disclaimer
-) {}
+) {
+}
