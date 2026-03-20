@@ -1,5 +1,6 @@
 package com.example.medilingo.service;
 
+import com.example.medilingo.controller.drug.response.DrugEntry;
 import com.example.medilingo.controller.drug.response.LocalProductDto;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -41,7 +42,7 @@ public class OpenFdaService {
      * - splSetId: SPL set ID for DailyMed image lookup (most reliable)
      * - displayName: formatted name shown to the user
      */
-    public record DrugEntry(String brandName, String splSetId, String displayName) {}
+    //public record DrugEntry(String brandName, String splSetId, String displayName) {}
 
     /**
      * Search OpenFDA label.json for drug products containing the given active ingredient.
