@@ -10,6 +10,13 @@ spring:
     url: ${DB_URL}
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
+  data:
+    redis:
+      url: ${REDIS_URL:redis://localhost:6379}
+  cache:
+    type: redis
+    redis:
+      time-to-live: 86400000  # 24 hours in ms
 
 
   jpa:
