@@ -11,23 +11,36 @@ public final class DrugMatchingUtils {
 
 	private DrugMatchingUtils() {}
 
+	// ── Core fuzzy-match predicate ───────────────────────────────────────
+	/**
+	 * Returns {@code true} when two ingredient strings are "close enough".
+	 * Handles salt-form mismatches, e.g. "cetirizine" vs "cetirizine hydrochloride"
+	 * by checking if either string contains the other (case-insensitive).
+	 */
+	private static boolean ingredientMatches(String a, String b) {
+		if (a == null || b == null) return false;
+		String al = a.toLowerCase().trim();
+		String bl = b.toLowerCase().trim();
+		return al.equals(bl) || al.contains(bl) || bl.contains(al);
+	}
+
 	/**
 	 * Counts how many of the target ingredients appear in the candidate's ingredient list.
-	 * Used for overlap scoring — higher score = better match.
+	 * Uses fuzzy matching to handle salt forms (e.g. "cetirizine" ↔ "cetirizine hydrochloride").
 	 */
 	public static int countOverlap(
 		List<String> candidateIngredients,
 		List<String> targetIngredients) {
 		if (candidateIngredients == null || candidateIngredients.isEmpty()) return 0;
-		return (int) candidateIngredients.stream()
-			.filter(ci -> targetIngredients.stream()
-				.anyMatch(ti -> ti.equalsIgnoreCase(ci)))
+		return (int) targetIngredients.stream()
+			.filter(ti -> candidateIngredients.stream()
+				.anyMatch(ci -> ingredientMatches(ci, ti)))
 			.count();
 	}
 
 	/**
 	 * Builds a warning message listing which target ingredients are missing from the candidate.
-	 * Returns null if total target ingredients <= 1 (no partial match concept for single ingredient)
+	 * Returns null if total target ingredients &lt;= 1 (no partial match concept for single ingredient)
 	 * or if all ingredients are covered.
 	 * warningContext is the prefix of the warning message — differs between translate and symptom flows.
 	 */
@@ -38,7 +51,7 @@ public final class DrugMatchingUtils {
 		if (targetIngredients.size() <= 1) return null;
 		List<String> missing = targetIngredients.stream()
 			.filter(ti -> candidateIngredients == null || candidateIngredients.stream()
-				.noneMatch(ci -> ci.equalsIgnoreCase(ti)))
+				.noneMatch(ci -> ingredientMatches(ci, ti)))
 			.toList();
 		if (missing.isEmpty()) return null;
 		return warningContext + String.join(", ", missing) + "이(가) 포함되지 않아요. 추가 약이 필요할 수 있어요.";
@@ -55,7 +68,7 @@ public final class DrugMatchingUtils {
 		if (matches == null || matches.isEmpty()) return null;
 		String result = matches.stream()
 			.filter(m -> candidateIngredients.stream()
-				.anyMatch(ci -> ci.equalsIgnoreCase(m.ingredient())))
+				.anyMatch(ci -> ingredientMatches(ci, m.ingredient())))
 			.map(m -> m.symptomsCovered() + " (" + m.reason() + ")")
 			.collect(Collectors.joining(" / "));
 		return result.isBlank() ? null : result;
@@ -75,7 +88,7 @@ public final class DrugMatchingUtils {
 		if (targetIngredients == null || targetIngredients.isEmpty()) return null;
 		String result = targetIngredients.stream()
 			.filter(ti -> candidateIngredients.stream()
-				.anyMatch(ci -> ci.equalsIgnoreCase(ti)))
+				.anyMatch(ci -> ingredientMatches(ci, ti)))
 			.map(ti -> {
 				String explanation = explanationsByIngredient != null
 					? explanationsByIngredient.get(ti.toLowerCase())
@@ -86,6 +99,16 @@ public final class DrugMatchingUtils {
 			})
 			.collect(Collectors.joining(" / "));
 		return result.isBlank() ? null : result;
+	}
+
+	/**
+	 * Returns {@code true} if the product covers at least 50% of the target ingredients.
+	 * Products below this threshold are considered too incomplete to be useful.
+	 */
+	public static boolean meetsMinimumCoverage(LocalProductDto p) {
+		if (p.totalIngredients() == null || p.totalIngredients() == 0) return true;
+		int score = p.matchScore() != null ? p.matchScore() : 0;
+		return (double) score / p.totalIngredients() >= 0.1;
 	}
 
 	/**

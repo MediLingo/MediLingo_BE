@@ -74,6 +74,7 @@ public class SymptomDrugMappingService {
                 targetIngredients,
                 COVERAGE_WARNING_CONTEXT))
             .sorted(byMatchScoreDesc())
+            .filter(DrugMatchingUtils::meetsMinimumCoverage)
             .limit(10)
             .toList();
     }
