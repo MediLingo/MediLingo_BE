@@ -140,28 +140,29 @@ public class DrugTranslateService {
             .flatMap(ingredient ->
                 openFdaService.searchByIngredientRich(ingredient, 5).stream())
             .filter(e -> e.splSetId() == null || seenSplIds.add(e.splSetId()))
-            .map(e -> DrugMatchingUtils.buildProductDto(
-                null,
-                e.displayName(),
-                dailyMedImageService.fetchImageUrl(e.splSetId()),
-                "OpenFDA",
-                DrugMatchingUtils.buildReasonFromExplanations(e.allIngredients(), targetIngredients, explanations),
-                e.allIngredients(),
-                targetIngredients,
-                COVERAGE_WARNING_CONTEXT))
+            .map(e -> {
+                LocalDrugProduct persisted = upsertService.upsert(
+                    "US",
+                    targetIngredients.get(0), //legacy primary ingredient only, since OpenFDA products don't have a clear primary ingredient field
+                    targetIngredients,
+                    e.displayName(),
+                    dailyMedImageService.fetchImageUrl(e.splSetId()),
+                    "OpenFDA"
+                );
+                return DrugMatchingUtils.buildProductDto(
+                    persisted.getId(),
+                    e.displayName(),
+                    persisted.getImageUrl(),
+                    "OpenFDA",
+                    DrugMatchingUtils.buildReasonFromExplanations(e.allIngredients(), targetIngredients, explanations),
+                    e.allIngredients(),
+                    targetIngredients,
+                    COVERAGE_WARNING_CONTEXT);
+                })
             .sorted(byMatchScoreDesc())
             .filter(DrugMatchingUtils::meetsMinimumCoverage)
             .limit(10)
             .toList();
-
-        results.forEach(dto -> upsertService.upsert(
-                "US",
-                targetIngredients.get(0), //legacy primary ingredient only, since OpenFDA products don't have a clear primary ingredient field
-                targetIngredients,
-                dto.name(),
-                dto.imageUrl(),
-                dto.source()
-        ));
 
         return results;
     }
