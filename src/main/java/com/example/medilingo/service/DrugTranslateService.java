@@ -4,11 +4,14 @@ import com.example.medilingo.controller.drug.request.DrugTranslateRequest;
 import com.example.medilingo.controller.drug.response.DrugTranslateResponse;
 import com.example.medilingo.controller.drug.response.LocalProductDto;
 import com.example.medilingo.controller.drug.response.NormalizedDrug;
+import com.example.medilingo.domain.drug.LocalDrugProduct;
 import com.example.medilingo.domain.drug.repository.LocalDrugProductRepository;
 import com.example.medilingo.util.DrugMatchingUtils;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+
+import org.springframework.cglib.core.Local;
 import org.springframework.stereotype.Service;
 
 import java.util.Collections;
@@ -29,6 +32,7 @@ public class DrugTranslateService {
     private final DrugFallbackMappingService fallbackMappingService;
     private final OpenFdaService openFdaService;
     private final DailyMedImageService dailyMedImageService;
+    private final LocalProductUpsertService upsertService;
 
     public DrugTranslateResponse translate(DrugTranslateRequest req) {
         final String country = normalizeCountry(req.countryCode());
@@ -132,7 +136,7 @@ public class DrugTranslateService {
 
         Set<String> seenSplIds = new LinkedHashSet<>();
 
-        return targetIngredients.stream()
+        List<LocalProductDto> results = targetIngredients.stream()
             .flatMap(ingredient ->
                 openFdaService.searchByIngredientRich(ingredient, 5).stream())
             .filter(e -> e.splSetId() == null || seenSplIds.add(e.splSetId()))
@@ -149,6 +153,17 @@ public class DrugTranslateService {
             .filter(DrugMatchingUtils::meetsMinimumCoverage)
             .limit(10)
             .toList();
+
+        results.forEach(dto -> upsertService.upsert(
+                "US",
+                targetIngredients.get(0), //legacy primary ingredient only, since OpenFDA products don't have a clear primary ingredient field
+                targetIngredients,
+                dto.name(),
+                dto.imageUrl(),
+                dto.source()
+        ));
+
+        return results;
     }
 
     /**
